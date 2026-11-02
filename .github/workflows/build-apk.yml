@@ -1,0 +1,92 @@
+name: Build Debug APK
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: 'gradle'
+
+      - name: Build Android Project
+        run: |
+          set -e
+
+          echo "Searching for gradlew..."
+          GRADLEW_PATH=$(find . -name "gradlew" -type f -print -quit)
+          if [ -z "$GRADLEW_PATH" ]; then
+            echo "::error::Could not find gradlew in the repository. Make sure this is a valid Android project."
+            exit 1
+          fi
+
+          PROJECT_ROOT=$(dirname "$GRADLEW_PATH")
+          echo "Android project root detected at: $PROJECT_ROOT"
+          cd "$PROJECT_ROOT"
+
+          echo "Verifying application module..."
+          APP_MODULE_EXISTS=false
+          for f in $(find . -name "build.gradle" -o -name "build.gradle.kts"); do
+            if grep -q "com.android.application" "$f"; then
+              APP_MODULE_EXISTS=true
+              break
+            fi
+          done
+
+          if [ "$APP_MODULE_EXISTS" = false ]; then
+             echo "::error::Could not find an application module in the project (missing com.android.application plugin)."
+             exit 1
+          fi
+
+          echo "Granting execute permission to gradlew..."
+          chmod +x gradlew
+
+          echo "Removing stale project caches..."
+          rm -rf .gradle
+          find . -type d -name "build" -prune -exec rm -rf {} +
+
+          echo "Building debug APK..."
+          if ! ./gradlew assembleDebug --stacktrace --no-daemon; then
+            echo "::error::Failed to build the application module. Check the build logs."
+            exit 1
+          fi
+
+          echo "Locating generated APK..."
+          mkdir -p "$GITHUB_WORKSPACE/apk-artifact"
+
+          APK_FILES=$(find . -name "*.apk" -type f)
+          if [ -z "$APK_FILES" ]; then
+            echo "::error::Gradle build succeeded, but no APK file was found in the output directories."
+            exit 1
+          fi
+
+          APK_FOUND=false
+          for apk in $APK_FILES; do
+            echo "Found APK: $apk"
+            cp "$apk" "$GITHUB_WORKSPACE/apk-artifact/"
+            APK_FOUND=true
+          done
+
+          if [ "$APK_FOUND" = false ]; then
+            echo "::error::Failed to copy APK files."
+            exit 1
+          fi
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-app-debug-apk
+          path: apk-artifact/*.apk
+          if-no-files-found: error
